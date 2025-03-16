@@ -1,3 +1,5 @@
+import fibre
+import ref_tool
 import serial
 import time
 from collections import deque
@@ -6,6 +8,7 @@ import logging
 import signal
 import numpy as np
 import scipy
+import keyboard
 
 
 B_PRIME_MAT = np.array([
@@ -17,7 +20,8 @@ B_PRIME_MAT = np.array([
     [14, 16, 19, -288, -288, -289]
 ])
 
-def make_bar(data: np.ndarray, width: int = 50, scale:int=1e-6) -> None:
+
+def make_bar(data: np.ndarray, width: int = 50, scale: int = 1e-6) -> None:
     bar_length = min(abs(int(data * scale)), width)
 
     if data >= 0:
@@ -25,9 +29,9 @@ def make_bar(data: np.ndarray, width: int = 50, scale:int=1e-6) -> None:
     else:
         disp = f"{' ' * (width-bar_length)}{'#' * bar_length}[{data}\t]{' ' * (width)}"
     return disp
-    
 
-def print_bars(data: np.ndarray, width: int = 50, scale:int=1e-6) -> None:
+
+def print_bars(data: np.ndarray, width: int = 50, scale: int = 1e-6) -> None:
     """ Visualize wrench """
     print("\033[H\033[J", end="")  # Clear the screen
     for i in range(len(data)):
@@ -44,65 +48,36 @@ def skew_symmetric(v: np.ndarray[3]) -> np.ndarray[3, 3]:
 
 
 class DummyRobot:
-    def __init__(self, real_device=False, serial_port="/dev/ttyACM0"):
+    def __init__(self, real_device=False, serial_id=None):
         self.real_device = real_device
         if real_device:
-            self.ser = serial.Serial(serial_port, 9600, timeout=0.1)
-
-        logging.info(self._send_cmd_and_wait("!START\n"))
-        logging.info(self._send_cmd_and_wait("!HOME\n", timeout=100))
+            logging.info("Connecting to the robot...")
+            if serial_id is not None:
+                self.arm = ref_tool.find_any(serial_number=serial_id)
+            else:
+                self.arm = ref_tool.find_any()
+            logging.info("Connected to the robot.")
+            self.arm.robot.set_enable(True)
+            self.arm.robot.homing()
 
         self.xyz_control_gain = 1e-9
         self.rpy_control_gain = 1e-9
 
-        self.last_pose = None
-        self.last_target_pose = None
+        self.last_pose = self.read_eef_pose()
+        self.last_target_pose = self.last_pose
 
         self.ignored_traget_count = 0
 
     def home(self):
-        self._send_cmd("!HOME\n")
-
-    def _send_cmd_and_wait(self, cmd: str, timeout:float=0.1) -> str:
-        # clear the buffer
-        while self.ser.inWaiting() > 0:
-            self.ser.readline()
-
-        self.ser.write(cmd.encode())
-        logging.debug(f"Sent command: {cmd} , waiting for response")
-
-        response = None
-        t = time.time()
-        while not response and time.time() - t < timeout:
-            response = self.ser.readline().decode()
-        if not response:
-            logging.error("Timeout waiting for response")
-            return 
-        logging.debug(f"Received response: {response}")
-        return response
-    
-
-    def _send_cmd(self, cmd: str) -> None:
-        self.ser.write(cmd.encode())
-        logging.debug(f"Sent command: {cmd}")
+        self.arm.robot.homing()
 
     def read_eef_pose(self) -> np.ndarray[6]:
         """ EEF pose is a 6D vector [x, y, z, roll, pitch, yaw] """
         if self.real_device:
-            # send #GETLPOSE over serial, and wait for response
-            # the serial should return "ok %.2f %.2f %.2f %.2f %.2f %.2f", corresponding to x, y, z, roll, pitch, yaw
-            # return example: "ok 227.52 -0.19 323.88 0.13 90.00 0.00"
-            response = self._send_cmd_and_wait("#GETLPOSE\n", timeout=1)
-            if not response:
-                return self.last_pose
-            if response.startswith("ok"):
-                try:
-                    eef_pose = np.array([float(x) for x in response.split()[1:]])
-                    self.last_pose = eef_pose
-                    return eef_pose
-                except ValueError:
-                    logging.error("Failed to parse response: ", response)
-                    return np.array([1, 1, 1, 0, 0, 1])
+            self.arm.robot.eef_pose.update_pose_6D()
+            x, y, z, a, b, c = self.arm.robot.eef_pose.x, self.arm.robot.eef_pose.y, self.arm.robot.eef_pose.z, self.arm.robot.eef_pose.a, self.arm.robot.eef_pose.b, self.arm.robot.eef_pose.c
+            self.last_pose = np.array([x, y, z, a, b, c])
+            return np.array([x, y, z, a, b, c])
         else:
             return np.array([1, 1, 1, 0, 0, 1])
 
@@ -111,16 +86,19 @@ class DummyRobot:
         # prevent setting a target that is too far from last target or current pose
         if self.last_target_pose is not None and self.last_pose is not None and self.ignored_traget_count < 5:
             if np.any(np.abs(target_pose - self.last_target_pose) > 5) or np.any(np.abs(target_pose - self.last_pose) > 5):
-                logging.error("Target pose too far from last target, ignoring("+str(target_pose)+")")
+                logging.error(
+                    "Target pose too far from last target, ignoring("+str(target_pose)+")")
                 self.ignored_traget_count += 1
                 return
-        
+
         self.last_target_pose = target_pose
         self.ignored_traget_count = 0
-        logging.info(f"Setting target pose to {str(target_pose[:3])}, {target_pose[3:]}")
+        logging.info(
+            f"Setting target pose to {str(target_pose[:3])}, {target_pose[3:]}")
         if self.real_device:
-            result = self._send_cmd_and_wait("@"+",".join([f"{x:.2f}" for x in target_pose])+ "\n", timeout=10)
-            logging.info(f"Set target pose result: {result}")
+            self.arm.robot.move_l(
+                target_pose[0], target_pose[1], target_pose[2], target_pose[3], target_pose[4], target_pose[5])
+            logging.info(f"Set target pose done")
 
     def update_pose_with_wrench(self, wrench: np.ndarray[6]) -> np.ndarray[6]:
         """ Update the pose of the robot with the given wrench """
@@ -152,7 +130,8 @@ class DummyRobot:
 
         p = eef_pose[:3]
         euler_angles = eef_pose[3:]
-        R = scipy.spatial.transform.Rotation.from_euler("xyz", euler_angles, degrees=True).as_matrix()
+        R = scipy.spatial.transform.Rotation.from_euler(
+            "xyz", euler_angles, degrees=True).as_matrix()
 
         p_cross = skew_symmetric(p)
         Ad = np.block([
@@ -165,7 +144,8 @@ class DummyRobot:
         force_base = w_base[:3]
         torque_base = w_base[3:]
         target_xyz = p + self.xyz_control_gain * force_base
-        target_R = R @ scipy.linalg.expm(skew_symmetric(self.rpy_control_gain * torque_base))
+        target_R = R @ scipy.linalg.expm(
+            skew_symmetric(self.rpy_control_gain * torque_base))
         target_euler_angles = scipy.spatial.transform.Rotation.from_matrix(
             target_R).as_euler("xyz", degrees=True)
 
@@ -183,10 +163,11 @@ class FTReader:
         self.serial_port.reset_output_buffer()
         self.calibration_values = [0] * 6  # Calibration values for the sensor
 
-        self.data_buffer = deque(maxlen=50)  # Buffer for storing the last 200 data points
+        # Buffer for storing the last 200 data points
+        self.data_buffer = deque(maxlen=50)
         # Timing for interval measurement
         self.last_update_time = time.time()  # Initialize the last update time
-    
+
     def get_filtered_latest(self):
         hist = np.vstack(self.data_buffer).T
 
@@ -196,11 +177,14 @@ class FTReader:
         hist_filtered = scipy.signal.filtfilt(b, a, hist)
 
         # hist_filtered -= np.mean(hist_filtered, axis=1, keepdims=True)
-        
+
         return hist_filtered.T[-1]
-    
+
     def warmed_up(self) -> bool:
         return (len(self.data_buffer) > 20)
+
+    def set_zero(self):
+        self.serial_port.write(b"t\n")
 
     def run_thread(self):
         SG_ORDER = [1, 6, 5, 4, 3, 2]
@@ -212,7 +196,8 @@ class FTReader:
         while self.running:
             if self.serial_port.inWaiting() > 0:
                 current_time = time.time()
-                actual_interval = (current_time - self.last_update_time) * 1000  # ms
+                actual_interval = (
+                    current_time - self.last_update_time) * 1000  # ms
                 self.last_update_time = current_time
 
                 # Accumulate the sum and count of intervals
@@ -224,7 +209,8 @@ class FTReader:
                     if line:  # If the line is not empty
                         try:
                             # Attempt to parse the line as a list of floats
-                            sensor_values = [float(val) for val in line.split(",")[:6]]
+                            sensor_values = [float(val)
+                                             for val in line.split(",")[:6]]
 
                             # Initialize a list with the same length as sensor_values filled
                             # with zeros
@@ -241,7 +227,8 @@ class FTReader:
                                 reordered_values[i] -
                                 self.calibration_values[i] for i in range(6)]
 
-                            self.data_buffer.append(np.dot(B_PRIME_MAT, reordered_values))
+                            self.data_buffer.append(
+                                np.dot(B_PRIME_MAT, reordered_values))
                         except (ValueError, IndexError) as e:
                             # If conversion fails, it's not a data line
                             logging.info("Message received: %s", line)
@@ -254,7 +241,8 @@ class FTReader:
                 if current_time - last_print_time >= 1.0:
                     if interval_count > 0:
                         average_interval = interval_sum / interval_count
-                        logging.debug("Average serial interval: %.2f ms", average_interval)
+                        logging.debug(
+                            "Average serial interval: %.2f ms", average_interval)
                     else:
                         logging.debug("No data received in the last second.")
 
@@ -263,6 +251,50 @@ class FTReader:
                     interval_sum = 0.0
                     interval_count = 0
 
+
+class FakeFTReader:
+    """ Emulate the FT sensor """
+
+    def __init__(self):
+        self.data = np.zeros(6)
+        self.keys_add = {
+            'q': 0,
+            'w': 1,
+            'e': 2,
+            'r': 3,
+            't': 4,
+            'y': 5
+        }
+        self.keys_sub = {
+            'a': 0,
+            's': 1,
+            'd': 2,
+            'f': 3,
+            'g': 4,
+            'h': 5
+        }
+        self.running = True
+        self.setup_key_hooks()
+
+    def setup_key_hooks(self):
+        keyboard.on_press(self.on_key_event)
+
+    def on_key_event(self, event):
+        key = event.name
+        if key in self.keys_add:
+            self.data[self.keys_add[key]] += 1
+        elif key in self.keys_sub:
+            self.data[self.keys_sub[key]] -= 1
+
+    def get_filtered_latest(self):
+        return self.data * 1e8
+
+    def warmed_up(self):
+        return True
+
+    def run_thread(self):
+        while self.running:
+            time.sleep(0.01)
 
 
 if __name__ == "__main__":
@@ -273,9 +305,9 @@ if __name__ == "__main__":
     print(robot.read_eef_pose())
 
     ft_reader = FTReader("/dev/ttyUSB0", 115200)
+    # ft_reader = FakeFTReader() # Require root in linux
     ft_reader_thread = threading.Thread(target=ft_reader.run_thread)
     ft_reader_thread.start()
-    
 
     def signal_handler(sig, frame):
         logging.info("Ctrl+C pressed, stopping...")
@@ -286,9 +318,10 @@ if __name__ == "__main__":
         exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     logging.info("Warm-up ...")
     while True:
+
         if ft_reader.warmed_up():
             latest_data = np.asarray(ft_reader.get_filtered_latest())
             target = robot.update_pose_with_wrench(latest_data)
@@ -302,6 +335,6 @@ if __name__ == "__main__":
 
             print("Current pose | Calculated target delta:")
             for i in range(6):
-                print(f"{i}: {make_bar(robot.last_pose[i], 50, 0.1)} \t {i}: {make_bar(target[i]-robot.last_pose[i], 50, 10)}")
-            
-            time.sleep(0.1)
+                print(
+                    f"{i}: {make_bar(robot.last_pose[i], 50, 0.1)} \t {i}: {make_bar(target[i]-robot.last_pose[i], 50, 10)}")
+            time.sleep(0.01)
