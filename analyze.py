@@ -5,15 +5,18 @@ import scipy.signal as sig
 
 history = pickle.load(open("data.pkl", "rb"))
 
+# turn deque object into 2d array
+history = np.array(history)
+
 z = history.T
 
 # apply low pass filter
-b, a = sig.butter(4, 0.2)
+b, a = sig.butter(5, 1/15)
 z_filtered = sig.filtfilt(b, a, z)
 
-print(z_filtered.T[-1])
-
-plt.plot(z[3], label="raw")
-plt.plot(z_filtered[3], label="filtered")
+CHANNEL = 1  # the channel to plot (0-5)
+plt.plot(z[CHANNEL], label="raw")
+plt.plot(z_filtered[CHANNEL], label="filtered")
+plt.legend()
 
 plt.show()
