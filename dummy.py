@@ -1,4 +1,4 @@
-import ref_tool
+import fibre
 import logging
 import numpy as np
 import scipy
@@ -18,9 +18,9 @@ class DummyRobot:
         if real_device:
             logging.info("Connecting to the robot...")
             if serial_id is not None:
-                self.arm = ref_tool.find_any(serial_number=serial_id)
+                self.arm = fibre.find_any(serial_number=serial_id)
             else:
-                self.arm = ref_tool.find_any()
+                self.arm = fibre.find_any()
             logging.info("Connected to the robot.")
             self.arm.robot.set_enable(True)
             self.arm.robot.homing()
