@@ -36,13 +36,13 @@ class TCPTransport(fibre.protocol.StreamSource, fibre.protocol.StreamSink):
     deadline = None if deadline is None else max(deadline - time.monotonic(), 0)
     self.sock.settimeout(deadline)
     try:
-      data = self.sock.recv(n_bytes) # receive n_bytes
+      data = self.sock.recv(n_bytes, socket.MSG_WAITALL) # receive n_bytes
       return data
     except socket.timeout:
       # if we got a timeout data will still be none, so we call recv again
       # this time in non blocking state and see if we can get some data
       try:
-        return self.sock.recv(n_bytes)
+        return self.sock.recv(n_bytes, socket.MSG_DONTWAIT)
       except socket.timeout:
         raise TimeoutError
 

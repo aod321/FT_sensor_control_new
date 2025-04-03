@@ -174,7 +174,7 @@ class PacketFromStreamConverter(PacketSource):
         """
         while True:
             header = bytes()
-            '''
+
             # TODO: sometimes this call hangs, even though the device apparently sent something
             header = header + self._input.get_bytes_or_fail(1, deadline)
             if (header[0] != SYNC_BYTE):
@@ -194,11 +194,6 @@ class PacketFromStreamConverter(PacketSource):
             packet_length = header[1] + 2
             #print("wait for {} bytes".format(packet_length))
             packet = self._input.get_bytes_or_fail(packet_length, deadline)
-            '''
-            header = self._input.get_bytes_or_fail(3, deadline)
-            #print("wait for {} bytes".format(packet_length))
-            packet = self._input.get_bytes_or_fail(header[1], deadline)
-            packet = packet + self._input.get_bytes_or_fail(2, deadline)
             if calc_crc16(CRC16_INIT, packet) != 0:
                 #print("crc16 mismatch")
                 continue
